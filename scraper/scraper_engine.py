@@ -1,453 +1,534 @@
+# scraper/scraper_engine.py
 import requests
 import time
 import random
 import logging
-import re
+import hashlib
+import json
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse
-from typing import List, Dict, Optional
+from typing import List, Dict, Any, Optional
 from django.utils import timezone
+from urllib.parse import urlparse, parse_qs
 from .models import DailySlotData, Store, ScrapingError
 
-logger = logging.getLogger('scraper')
+from playwright.sync_api import sync_playwright, Response, TimeoutError as PlaywrightTimeoutError
+
+logger = logging.getLogger("scraper")
+
 
 class PachinkoScraper:
-    """Enhanced scraping engine for pachinko data"""
-    
-    def __init__(self):
-        self.session = requests.Session()
+    """
+    Robust Playwright-driven scraper for min-repo.com store pages.
+    - Renders JS
+    - Captures JSON/XHR responses
+    - Clicks through "tabs" to reveal all tables
+    - Dynamically maps headers to fields
+    """
+
+    def __init__(self, use_browser: bool = True, headless: bool = True, wait_table_timeout: int = 8_000):
         self.base_url = "https://min-repo.com"
-        self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'ja,en-US;q=0.7,en;q=0.3',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
+        self.use_browser = use_browser
+        self.headless = headless
+        self.wait_table_timeout = wait_table_timeout
+
+        # requests fallback
+        self.session = requests.Session()
+        self.session.headers.update({
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0 Safari/537.36"
+            ),
+            "Accept-Language": "ja,en-US;q=0.7,en;q=0.3",
+        })
+
+        # A flexible header -> field mapping (expand as needed)
+        self.column_map = {
+            "台番号": "machine_number",
+            "番号": "machine_number",
+            "機種": "machine_name",
+            "機種名": "machine_name",
+            "差枚": "credit_difference",
+            "平均差枚": "credit_difference",
+            "総差枚": "credit_difference",
+            "出玉": "credit_difference",
+            "平均G数": "game_count",
+            "ゲーム数": "game_count",
+            "回転数": "game_count",
+            "BB": "bb",
+            "RB": "rb",
+            "合成": "synthesis",
+            "機械割": "payout_rate",
+            "出率": "payout_rate",
+            "BB確率": "bb_rate",
+            "RB確率": "rb_rate",
+            "勝率": "win_rate",
         }
-        self.session.headers.update(self.headers)
-        
-    def scrape_store_data(self, store_id: int, target_date, scraping_session) -> Dict:
-        """Scrape data for a single store"""
-        result = {
-            'success': False,
-            'store_id': store_id,
-            'records_created': 0,
-            'errors': []
-        }
-        
+
+        # Tab keyword heuristics (Japanese + English)
+        self.tab_keywords = ["機種", "機種別", "バラエティ", "Variety", "By model", "suffix", "サフィックス", "機種別データ"]
+
+    # -------------------- Helpers --------------------
+    def _safe_int(self, value: Optional[str]) -> Optional[int]:
+        if value is None:
+            return None
         try:
-            # Get or create Store object
-            store, created = Store.objects.get_or_create(
-                store_id=store_id,
-                defaults={'is_active': True}
-            )
-            
-            # Build URL
-            url = f"{self.base_url}/{store_id}/"
-            logger.info(f"Scraping store {store_id}: {url}")
-            
-            # Add random delay to avoid rate limiting
-            time.sleep(random.uniform(1, 3))
-            
-            # Make request
-            response = self.session.get(url, timeout=30)
-            response.raise_for_status()
-            
-            # Debug: Save HTML for inspection
-            if logger.isEnabledFor(logging.DEBUG):
-                with open(f'debug_store_{store_id}.html', 'w', encoding='utf-8') as f:
-                    f.write(response.text)
-                logger.debug(f"Saved HTML to debug_store_{store_id}.html")
-            
-            # Parse data with multiple strategies
-            slot_data_list = self._parse_store_page_enhanced(response.text, store, target_date, url)
-            
-            if slot_data_list:
-                # Add scraping session to each record
-                for slot_data in slot_data_list:
-                    slot_data.scraping_session = scraping_session
-                
-                # Bulk create records
-                try:
-                    DailySlotData.objects.bulk_create(
-                        slot_data_list,
-                        ignore_conflicts=True,
-                        batch_size=1000
-                    )
-                    result['records_created'] = len(slot_data_list)
-                    result['success'] = True
-                    logger.info(f"Successfully scraped {len(slot_data_list)} records for store {store_id}")
-                    
-                    # Update store success
-                    store.last_successful_scrape = timezone.now()
-                    store.consecutive_failures = 0
-                    store.save()
-                    
-                except Exception as db_error:
-                    error_msg = f"Database error: {str(db_error)}"
-                    result['errors'].append(error_msg)
-                    logger.error(f"Database error for store {store_id}: {error_msg}")
-                
-            else:
-                result['errors'].append("No valid data found on page")
-                logger.warning(f"No valid data found for store {store_id}")
-                
-        except requests.RequestException as e:
-            error_msg = f"Request failed: {str(e)}"
-            result['errors'].append(error_msg)
-            logger.error(f"Request error for store {store_id}: {error_msg}")
-            self._log_error(scraping_session, store_id, "RequestException", error_msg, url)
-            
-        except Exception as e:
-            error_msg = f"Parsing failed: {str(e)}"
-            result['errors'].append(error_msg)
-            logger.error(f"Parsing error for store {store_id}: {error_msg}")
-            self._log_error(scraping_session, store_id, "ParsingException", error_msg, url)
-            
-        return result
-    
-    def _parse_store_page_enhanced(self, html_content: str, store: Store, target_date, url: str) -> List[DailySlotData]:
-        """Enhanced parsing with multiple strategies"""
-        soup = BeautifulSoup(html_content, 'html.parser')
-        slot_data_list = []
-        
-        # Strategy 1: Look for tables with specific selectors
-        strategies = [
-            self._parse_table_strategy,
-            self._parse_div_strategy,
-            self._parse_list_strategy,
-            self._parse_json_strategy
-        ]
-        
-        for strategy_func in strategies:
+            s = str(value).strip()
+            # drop leading +, commas, and common suffixes
+            s = s.replace(",", "").replace("+", "").replace("枚", "").replace("回", "").replace("円", "")
+            if s == "" or s.lower() in ("-", "null", "none"):
+                return None
+            return int(float(s))
+        except Exception:
+            return None
+
+    def _safe_float(self, value: Optional[str]) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            s = str(value).strip().replace("%", "").replace(",", "")
+            if s == "" or s.lower() in ("-", "null", "none"):
+                return None
+            return float(s)
+        except Exception:
+            return None
+
+    def _parse_win_rate(self, text: str):
+        """
+        Parse '3/5' style to wins,total,percent
+        Returns (wins:int or None, total:int or None, pct:float or None)
+        """
+        if not text:
+            return None, None, None
+        text = text.strip()
+        if "/" in text:
             try:
-                result = strategy_func(soup, store, target_date, url)
-                if result:
-                    logger.info(f"Successfully parsed {len(result)} records using {strategy_func.__name__}")
-                    return result
-            except Exception as e:
-                logger.debug(f"Strategy {strategy_func.__name__} failed: {str(e)}")
-                continue
-        
-        logger.warning(f"All parsing strategies failed for store {store.store_id}")
-        return slot_data_list
-    
-    def _parse_table_strategy(self, soup: BeautifulSoup, store: Store, target_date, url: str) -> List[DailySlotData]:
-        """Parse data from HTML tables"""
-        slot_data_list = []
-        
-        # Look for tables with different selectors
-        table_selectors = [
-            'table.data-table',
-            'table#machine-data',
-            'table[class*="machine"]',
-            'table[class*="data"]',
-            'div.machine-list table',
-            'table'
-        ]
-        
-        for selector in table_selectors:
-            tables = soup.select(selector)
-            for table in tables:
-                rows = table.find_all('tr')
-                if len(rows) < 2:  # Need at least header + 1 data row
-                    continue
-                    
-                logger.debug(f"Processing table with {len(rows)} rows using selector: {selector}")
-                
-                # Identify data rows (skip obvious headers)
-                data_rows = []
-                for i, row in enumerate(rows):
-                    if not self._is_header_row(row):
-                        data_rows.append((i, row))
-                
-                if not data_rows:
-                    continue
-                
-                # Parse each data row
-                for row_index, row in data_rows:
-                    try:
-                        slot_data = self._parse_machine_row_enhanced(row, store, target_date, url, row_index)
-                        if slot_data:
-                            slot_data_list.append(slot_data)
-                    except Exception as e:
-                        logger.debug(f"Failed to parse row {row_index}: {str(e)}")
-                        continue
-                
-                if slot_data_list:
-                    return slot_data_list
-        
-        return slot_data_list
-    
-    def _parse_div_strategy(self, soup: BeautifulSoup, store: Store, target_date, url: str) -> List[DailySlotData]:
-        """Parse data from div elements (alternative layout)"""
-        slot_data_list = []
-        
-        # Look for div-based layouts
-        div_selectors = [
-            'div.machine-item',
-            'div.machine-row',
-            'div[class*="machine"]',
-            'div[class*="slot"]',
-            'div[data-machine]',
-        ]
-        
-        for selector in div_selectors:
-            divs = soup.select(selector)
-            if divs:
-                logger.debug(f"Found {len(divs)} machine divs with selector: {selector}")
-                for i, div in enumerate(divs):
-                    try:
-                        slot_data = self._parse_machine_div(div, store, target_date, url, i)
-                        if slot_data:
-                            slot_data_list.append(slot_data)
-                    except Exception as e:
-                        logger.debug(f"Failed to parse div {i}: {str(e)}")
-                        continue
-                
-                if slot_data_list:
-                    return slot_data_list
-        
-        return slot_data_list
-    
-    def _parse_list_strategy(self, soup: BeautifulSoup, store: Store, target_date, url: str) -> List[DailySlotData]:
-        """Parse data from list elements"""
-        slot_data_list = []
-        
-        # Look for list-based layouts
-        list_selectors = [
-            'ul.machine-list li',
-            'ol.machine-list li',
-            'ul[class*="machine"] li',
-            'li[class*="machine"]',
-        ]
-        
-        for selector in list_selectors:
-            items = soup.select(selector)
-            if items:
-                logger.debug(f"Found {len(items)} machine list items with selector: {selector}")
-                for i, item in enumerate(items):
-                    try:
-                        slot_data = self._parse_machine_list_item(item, store, target_date, url, i)
-                        if slot_data:
-                            slot_data_list.append(slot_data)
-                    except Exception as e:
-                        logger.debug(f"Failed to parse list item {i}: {str(e)}")
-                        continue
-                
-                if slot_data_list:
-                    return slot_data_list
-        
-        return slot_data_list
-    
-    def _parse_json_strategy(self, soup: BeautifulSoup, store: Store, target_date, url: str) -> List[DailySlotData]:
-        """Parse data from embedded JSON"""
-        slot_data_list = []
-        
-        # Look for JSON data in script tags
-        script_tags = soup.find_all('script')
-        for script in script_tags:
-            if script.string:
-                try:
-                    import json
-                    # Look for JSON-like patterns
-                    content = script.string
-                    if 'machine' in content.lower() or 'slot' in content.lower():
-                        # Try to extract JSON data (implementation depends on actual format)
-                        logger.debug("Found potential JSON data in script tag")
-                        # Add actual JSON parsing logic here based on site structure
-                except Exception as e:
-                    continue
-        
-        return slot_data_list
-    
-    # In scraper/scraper_engine.py - Update the _parse_machine_row_enhanced method
+                parts = text.split("/")
+                wins = self._safe_int(parts[0])
+                total = self._safe_int(parts[1])
+                if wins is not None and total and total > 0:
+                    pct = round((wins / total) * 100.0, 2)
+                else:
+                    pct = None
+                return wins, total, pct
+            except Exception:
+                return None, None, None
+        # if already a percentage:
+        if "%" in text:
+            pct = self._safe_float(text)
+            return None, None, pct
+        return None, None, None
 
-    def _parse_machine_row_enhanced(self, row, store: Store, target_date, url: str, row_index: int) -> Optional[DailySlotData]:
-        """Enhanced machine row parsing for MySQL"""
-        cells = row.find_all(['td', 'th'])
-        if len(cells) < 2:
-            return None
-        
+    def _generate_mysql_id(self, store_id, target_date, unique_key) -> int:
+        date_str = target_date.strftime("%Y%m%d")
+        raw = f"{store_id}_{date_str}_{unique_key}_{time.time_ns()}"
+        return int(hashlib.md5(raw.encode()).hexdigest()[:15], 16)
+
+    def _model_has_field(self, field_name: str) -> bool:
+        # Safe check whether your model has a field (so we don't set unknown attributes)
         try:
-            cell_texts = []
-            for cell in cells:
-                text = cell.get_text().strip()
-                if not text and cell.get('data-value'):
-                    text = cell.get('data-value')
-                cell_texts.append(text)
-            
-            non_empty_cells = [text for text in cell_texts if text and text != '-']
-            if len(non_empty_cells) < 2:
-                return None
-            
-            # Parse data
-            machine_number = None
-            credit_diff = None
-            game_count = None
-            bb_count = None
-            rb_count = None
-            
-            for i, text in enumerate(cell_texts):
-                if machine_number is None and re.match(r'^\d+$', text):
-                    machine_number = int(text)
-                elif re.match(r'^[\d\-\+\.,]+$', text):
-                    num_value = self._safe_int(text)
-                    if num_value is not None:
-                        if credit_diff is None and abs(num_value) > 10:
-                            credit_diff = num_value
-                        elif game_count is None and num_value > 0:
-                            game_count = num_value
-                        elif bb_count is None and 0 <= num_value <= 100:
-                            bb_count = num_value
-                        elif rb_count is None and 0 <= num_value <= 100:
-                            rb_count = num_value
-            
-            if machine_number or (credit_diff is not None) or (game_count is not None):
-                # Generate unique ID for MySQL
-                unique_id = self._generate_mysql_id(store.store_id, target_date, machine_number or row_index)
-                
-                payout_rate = None
-                if credit_diff is not None and game_count and game_count > 0:
-                    payout_rate = round((credit_diff / game_count) * 100, 4)
-                
-                slot_data = DailySlotData(
-                    id=unique_id,  # Use generated ID
-                    date=target_date,
-                    store_id=store.store_id,  # Use store_id directly
-                    machine_number=machine_number,
-                    credit_difference=credit_diff,
-                    game_count=game_count,
-                    bb=bb_count,
-                    rb=rb_count,
-                    payout_rate=payout_rate,
-                    data_url=url
-                )
-                
-                return slot_data
-                
-        except Exception as e:
-            logger.debug(f"Error parsing enhanced machine row {row_index}: {str(e)}")
-        
-        return None
-
-    def _generate_mysql_id(self, store_id: int, target_date, machine_number: int) -> int:
-        """Generate unique ID for MySQL table"""
-        import hashlib
-        from datetime import datetime
-        
-        # Create a unique string
-        date_str = target_date.strftime('%Y%m%d')
-        unique_str = f"{store_id}_{date_str}_{machine_number}_{datetime.now().microsecond}"
-        
-        # Generate a hash and convert to integer
-        hash_obj = hashlib.md5(unique_str.encode())
-        # Take first 15 characters of hex to ensure it fits in BIGINT
-        hash_hex = hash_obj.hexdigest()[:15]
-        unique_id = int(hash_hex, 16)
-        
-        return unique_id
-
-    def _parse_machine_div(self, div, store: Store, target_date, url: str, index: int) -> Optional[DailySlotData]:
-        """Parse machine data from div element"""
-        try:
-            # Extract text and look for data attributes
-            text_content = div.get_text().strip()
-            
-            # Look for data in attributes
-            machine_number = div.get('data-machine-number') or div.get('data-number')
-            machine_name = div.get('data-machine-name') or div.get('data-name')
-            
-            # Parse text content for numeric data
-            numbers = re.findall(r'[\d\-\+\.,]+', text_content)
-            
-            if machine_number:
-                machine_number = self._safe_int(machine_number)
-            elif numbers:
-                machine_number = self._safe_int(numbers[0])
-            
-            # Create minimal record if we have some data
-            if machine_number or text_content:
-                slot_data = DailySlotData(
-                    date=target_date,
-                    store=store,
-                    machine_number=machine_number,
-                    machine_name=machine_name,
-                    data_url=url,
-                    raw_data={
-                        'div_index': index,
-                        'text_content': text_content,
-                        'parsed_numbers': numbers,
-                        'parsed_at': timezone.now().isoformat(),
-                        'parsing_strategy': 'div_based'
-                    }
-                )
-                return slot_data
-                
-        except Exception as e:
-            logger.debug(f"Error parsing machine div {index}: {str(e)}")
-        
-        return None
-    
-    def _parse_machine_list_item(self, item, store: Store, target_date, url: str, index: int) -> Optional[DailySlotData]:
-        """Parse machine data from list item"""
-        # Similar to div parsing but for list items
-        return self._parse_machine_div(item, store, target_date, url, index)
-    
-    def _is_header_row(self, row) -> bool:
-        """Enhanced header row detection"""
-        cells = row.find_all(['td', 'th'])
-        if not cells:
+            return any(f.name == field_name for f in DailySlotData._meta.get_fields())
+        except Exception:
             return False
-        
-        # Check if it's a th row (table header)
-        if row.find_all('th'):
-            return True
-        
-        # Check for common header text patterns
-        text = ' '.join(cell.get_text().strip().lower() for cell in cells)
-        header_keywords = [
-            '台番号', '機種', '差枚', 'ゲーム数', 'bb', 'rb', 
-            'machine', 'number', 'game', 'count', 'bonus',
-            '番号', '台', '機', 'no', 'name', '名前'
-        ]
-        
-        # If more than 2 header keywords found, likely a header
-        keyword_count = sum(1 for keyword in header_keywords if keyword in text)
-        
-        return keyword_count >= 2
-    
-    def _safe_int(self, value: str) -> Optional[int]:
-        """Enhanced safe integer conversion"""
-        if not value:
-            return None
-        try:
-            # Remove common formatting characters
-            cleaned = str(value).replace(',', '').replace('枚', '').replace('回', '').replace('円', '').strip()
-            
-            # Handle negative numbers
-            if cleaned.startswith('-'):
-                cleaned = cleaned[1:]
-                multiplier = -1
-            elif cleaned.startswith('+'):
-                cleaned = cleaned[1:]
-                multiplier = 1
-            else:
-                multiplier = 1
-            
-            if cleaned == '-' or cleaned == '' or cleaned == 'null' or cleaned == 'None':
-                return None
-            
-            # Try to convert
-            result = int(float(cleaned)) * multiplier
-            return result
-            
-        except (ValueError, TypeError):
-            return None
-    
+
+    # -------------------- Page rendering & capture --------------------
+    def _render_page_and_capture(self, url: str, max_tab_clicks: int = 6) -> Dict[str, Any]:
+        """
+        Render page via Playwright, click candidate tab elements, capture:
+          - html_fragments: list of HTML snapshots after each tab activation
+          - json_payloads: list of parsed JSON from XHR responses
+        """
+        fragments: List[str] = []
+        captured_jsons: List[Any] = []
+
+        if not self.use_browser:
+            # fallback to requests
+            resp = self.session.get(url, timeout=30)
+            resp.raise_for_status()
+            return {"html_fragments": [resp.text], "json_payloads": []}
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=self.headless,
+                                       args=[
+                                           "--no-sandbox",
+                                           "--disable-dev-shm-usage",
+                                           "--disable-blink-features=AutomationControlled",
+                                       ])
+            page = browser.new_page()
+            page.set_extra_http_headers({"User-Agent": self.session.headers["User-Agent"]})
+            response_jsons = []
+
+            def _on_response(response: Response):
+                try:
+                    ct = response.headers.get("content-type", "")
+                    url_r = response.url
+                    # heuristic: JSON endpoints or xhr
+                    if "application/json" in ct.lower() or url_r.lower().endswith(".json") or "ajax" in url_r.lower() or "api" in url_r.lower():
+                        try:
+                            text = response.text()
+                            # parse small JSON bodies only (avoid giant binary)
+                            if text and len(text) < 5_000_000:
+                                parsed = json.loads(text)
+                                response_jsons.append({"url": url_r, "json": parsed})
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            page.on("response", _on_response)
+
+            try:
+                page.goto(url, timeout=60_000)
+            except PlaywrightTimeoutError:
+                logger.warning("Playwright: initial page.goto timeout, continuing with current DOM.")
+
+            # allow network idle & small wait
+            try:
+                page.wait_for_load_state("networkidle", timeout=10_000)
+            except PlaywrightTimeoutError:
+                pass
+            page.wait_for_timeout(1_200)
+
+            # initial snapshot
+            try:
+                fragments.append(page.content())
+            except Exception:
+                pass
+
+            # Find possible tab-like controls and click them
+            candidate_selectors = ["a", "button", "li", "span", "label", "div"]
+            clicks_done = 0
+            seen_texts = set()
+
+            # gather clickable elements that contain any tab_keywords in their visible text
+            clickable_locators = []
+            for tag in candidate_selectors:
+                elems = page.query_selector_all(tag)
+                for el in elems:
+                    try:
+                        text = (el.inner_text() or "").strip()
+                        if not text:
+                            continue
+                        # reduce noise
+                        txt_norm = text.replace("\n", " ").strip()
+                        if txt_norm in seen_texts:
+                            continue
+                        for kw in self.tab_keywords:
+                            if kw in txt_norm:
+                                clickable_locators.append(el)
+                                seen_texts.add(txt_norm)
+                                break
+                    except Exception:
+                        continue
+                if len(clickable_locators) >= max_tab_clicks:
+                    break
+
+            # Click each candidate and capture snapshot after action
+            for el in clickable_locators[:max_tab_clicks]:
+                try:
+                    # scroll into view and click
+                    el.scroll_into_view_if_needed()
+                    el.click(force=True, timeout=5_000)
+                    # wait for any network activity (XHR) to settle
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=6_000)
+                    except PlaywrightTimeoutError:
+                        pass
+                    page.wait_for_timeout(800)  # small pause
+                    fragments.append(page.content())
+                    clicks_done += 1
+                except Exception:
+                    # ignore click failures
+                    continue
+
+            # Also try clicking elements that have 'tab' role or data attributes pointing to table
+            # (best-effort; site-specific tuning may be needed)
+            # No more clicks; now close
+            captured_jsons = response_jsons
+            try:
+                browser.close()
+            except Exception:
+                pass
+
+        return {"html_fragments": fragments, "json_payloads": captured_jsons}
+
+    # -------------------- DOM parsing --------------------
+    def _extract_from_table_html(self, html: str, store: Store, target_date, page_url: str) -> List[DailySlotData]:
+        soup = BeautifulSoup(html, "html.parser")
+        results: List[DailySlotData] = []
+
+        # find all table elements
+        tables = soup.find_all("table")
+        if not tables:
+            return results
+
+        for table in tables:
+            # collect headers (if any)
+            headers = [th.get_text(strip=True) for th in table.find_all("th")]
+            # If there are no headers, try infer small table by number of columns by the first row
+            if not headers:
+                first_row = table.find("tr")
+                if not first_row:
+                    continue
+                td_count = len(first_row.find_all("td"))
+                # create generic headers if none found (best-effort)
+                headers = [f"col_{i}" for i in range(td_count)]
+
+            mapped_headers = [self.column_map.get(h, None) for h in headers]
+
+            # iterate rows (skip header row)
+            for tr in table.find_all("tr"):
+                tds = tr.find_all("td")
+                # skip empty / header-only rows
+                if not tds:
+                    continue
+                # if mismatch in td count and header len, try to proceed with min length
+                # get text of each td
+                td_texts = [td.get_text(strip=True) for td in tds]
+                # skip rows too short
+                if len(td_texts) < 1:
+                    continue
+
+                data: Dict[str, Any] = {}
+                unmapped: Dict[str, str] = {}
+                for idx, cell_text in enumerate(td_texts):
+                    hdr = headers[idx] if idx < len(headers) else f"col_{idx}"
+                    mapped = self.column_map.get(hdr)
+                    if not mapped:
+                        # maybe header was something like '勝率' but the actual header text is present in some other language
+                        unmapped[hdr] = cell_text
+                        continue
+                    # handle special mapped types
+                    if mapped in ("machine_number", "credit_difference", "game_count", "bb", "rb"):
+                        data[mapped] = self._safe_int(cell_text)
+                    elif mapped in ("payout_rate", "bb_rate", "rb_rate"):
+                        data[mapped] = self._safe_float(cell_text)
+                    elif mapped == "win_rate":
+                        wins, total, pct = self._parse_win_rate(cell_text)
+                        # store wins/total in bb/rb if model doesn't have dedicated fields
+                        data["bb"] = wins
+                        data["rb"] = total
+                        data["win_rate"] = pct
+                    else:
+                        data[mapped] = cell_text
+
+                # Accept row if we have at least machine_number or machine_name or credit_difference (aggregated table)
+                if not any(k in data for k in ("machine_number", "machine_name", "credit_difference")):
+                    continue
+
+                # try to find machine_id in anchor href inside the row (if present)
+                machine_id = None
+                try:
+                    a = tr.find("a", href=True)
+                    if a:
+                        parsed = parse_qs(urlparse(a["href"]).query)
+                        if "num" in parsed:
+                            machine_id = self._safe_int(parsed.get("num")[0])
+                except Exception:
+                    machine_id = None
+
+                # unique key for ID generation
+                unique_key = data.get("machine_number") or data.get("machine_name") or hash("".join(td_texts)) & 0xFFFFFF
+                unique_id = self._generate_mysql_id(store.store_id, target_date, unique_key)
+
+                # build kwargs carefully only allowing fields that exist on the model
+                kwargs = {
+                    "id": unique_id,
+                    "date": target_date,
+                    "store_id": store.store_id,
+                    "machine_id": machine_id,
+                    "data_url": page_url
+                }
+
+                # whitelisted fields typical in your model
+                allowed_fields = [
+                    "machine_number",
+                    "credit_difference",
+                    "game_count",
+                    "payout_rate",
+                    "bb",
+                    "rb",
+                    "synthesis",
+                    "bb_rate",
+                    "rb_rate",
+                    "win_rate"
+                ]
+                for k in allowed_fields:
+                    if k in data and self._model_has_field(k):
+                        kwargs[k] = data[k]
+
+                # create model instance (unsaved)
+                try:
+                    slot = DailySlotData(**kwargs)
+                    # attach unmapped info if model supports raw_data
+                    if unmapped and self._model_has_field("raw_data"):
+                        try:
+                            setattr(slot, "raw_data", {"unmapped": unmapped, "parsed_at": timezone.now().isoformat()})
+                        except Exception:
+                            pass
+                    results.append(slot)
+                except Exception as e:
+                    logger.debug(f"Failed to create DailySlotData instance for row: {e}")
+                    continue
+
+        return results
+
+    # -------------------- JSON parsing --------------------
+    def _extract_from_json_payloads(self, payloads: List[Dict[str, Any]], store: Store, target_date, page_url: str) -> List[DailySlotData]:
+        """
+        Try to locate arrays of machine data inside JSON responses.
+        This is heuristic: we search for list values where items are dicts that contain numeric fields like '差枚', 'g', 'game', 'bb', etc.
+        """
+        results: List[DailySlotData] = []
+
+        for p in payloads:
+            body = p.get("json")
+            if not body:
+                continue
+
+            # if body itself is list of dicts
+            candidates = []
+            if isinstance(body, list):
+                candidates.append(body)
+            elif isinstance(body, dict):
+                # find nested lists with dict items
+                for k, v in body.items():
+                    if isinstance(v, list) and v and isinstance(v[0], dict):
+                        candidates.append(v)
+
+            for c in candidates:
+                for item in c:
+                    # best-effort field extraction by key name similarity
+                    # normalize keys to lower/strip
+                    lk = {str(k).lower(): v for k, v in item.items()}
+                    # heuristics
+                    machine_number = None
+                    credit_difference = None
+                    game_count = None
+                    bb = None
+                    rb = None
+                    payout_rate = None
+                    machine_id = None
+
+                    # try common keys
+                    for key in ("machine_number", "no", "台番号", "number", "num"):
+                        if key in lk:
+                            machine_number = self._safe_int(lk[key])
+                            break
+                    for key in ("difference", "差枚", "credit", "差"):
+                        if key in lk:
+                            credit_difference = self._safe_int(lk[key])
+                            break
+                    for key in ("game_count", "g", "games", "回転数"):
+                        if key in lk:
+                            game_count = self._safe_int(lk[key])
+                            break
+                    for key in ("bb",):
+                        if key in lk:
+                            bb = self._safe_int(lk[key])
+                            break
+                    for key in ("rb",):
+                        if key in lk:
+                            rb = self._safe_int(lk[key])
+                            break
+                    for key in ("payout_rate", "rate", "出率"):
+                        if key in lk:
+                            payout_rate = self._safe_float(lk[key])
+                            break
+                    for key in ("id", "machine_id", "num"):
+                        if key in lk:
+                            machine_id = self._safe_int(lk[key])
+                            break
+
+                    if machine_number is None and credit_difference is None:
+                        # skip unlikely entries
+                        continue
+
+                    unique_key = machine_number or machine_id or hash(str(item)) & 0xFFFFFF
+                    uid = self._generate_mysql_id(store.store_id, target_date, unique_key)
+
+                    kwargs = {
+                        "id": uid,
+                        "date": target_date,
+                        "store_id": store.store_id,
+                        "machine_id": machine_id,
+                        "data_url": page_url
+                    }
+                    for k, v in (
+                        ("machine_number", machine_number),
+                        ("credit_difference", credit_difference),
+                        ("game_count", game_count),
+                        ("bb", bb),
+                        ("rb", rb),
+                        ("payout_rate", payout_rate),
+                    ):
+                        if v is not None and self._model_has_field(k):
+                            kwargs[k] = v
+
+                    try:
+                        slot = DailySlotData(**kwargs)
+                        # attach item raw if model supports raw_data
+                        if self._model_has_field("raw_data"):
+                            try:
+                                setattr(slot, "raw_data", {"source": p.get("url"), "payload_item": item})
+                            except Exception:
+                                pass
+                        results.append(slot)
+                    except Exception:
+                        continue
+
+        return results
+
+    # -------------------- Orchestration --------------------
+    def _parse_store_page_enhanced(self, html_content: str, store: Store, target_date, url: str) -> List[DailySlotData]:
+        """
+        Main orchestrator: try JSON payloads first (if any found while rendering),
+        otherwise parse all table HTML snapshots.
+        """
+        # If use_browser, perform interactive render to also capture XHR and tabbed snapshots
+        if self.use_browser:
+            capture = self._render_page_and_capture(url)
+            fragments = capture.get("html_fragments", [])
+            json_payloads = capture.get("json_payloads", [])
+        else:
+            # fallback only static HTML
+            fragments = [html_content]
+            json_payloads = []
+
+        # First try JSON payloads (faster, less error-prone)
+        if json_payloads:
+            try:
+                from itertools import chain
+                json_items = self._extract_from_json_payloads(json_payloads, store, target_date, url)
+                if json_items:
+                    logger.info(f"Extracted {len(json_items)} items from JSON payloads")
+                    return json_items
+            except Exception:
+                logger.debug("JSON extraction failed, will fall back to DOM parsing.")
+
+        # Parse every HTML fragment (snapshots for initial + tabs)
+        all_rows: List[DailySlotData] = []
+        for frag in fragments:
+            try:
+                rows = self._extract_from_table_html(frag, store, target_date, url)
+                if rows:
+                    all_rows.extend(rows)
+            except Exception as e:
+                logger.debug(f"Failed parsing fragment: {e}")
+                continue
+
+        # Deduplicate by unique id
+        unique_map = {}
+        for r in all_rows:
+            try:
+                unique_map[getattr(r, "id")] = r
+            except Exception:
+                pass
+
+        final_rows = list(unique_map.values())
+        return final_rows
+
+    # -------------------- Error logging --------------------
     def _log_error(self, session, store_id: int, error_type: str, error_message: str, url: str):
-        """Log scraping error to database"""
         try:
             ScrapingError.objects.create(
                 session=session,
@@ -457,4 +538,64 @@ class PachinkoScraper:
                 url=url
             )
         except Exception as e:
-            logger.error(f"Failed to log error to database: {str(e)}")
+            logger.error(f"Failed to log error to database: {e}")
+
+    # Public wrapper (keeps signature similar to your existing code)
+    def scrape_store_data(self, store_id: int, target_date, scraping_session) -> Dict:
+        """Compatibility wrapper so your management command stays the same."""
+        # reuse your previous flow but call the enhanced parser
+        result = {
+            "success": False,
+            "store_id": store_id,
+            "records_created": 0,
+            "errors": []
+        }
+        try:
+            store, _ = Store.objects.get_or_create(store_id=store_id, defaults={"is_active": True})
+            url = f"{self.base_url}/{store_id}/"
+            logger.info(f"Scraping store {store_id}: {url}")
+
+            # polite random delay
+            time.sleep(random.uniform(0.5, 2.0))
+
+            # initial HTML using requests only (for non-browser mode) - we pass it to enhanced parser which can re-render
+            initial_html = None
+            try:
+                initial_html = self.session.get(url, timeout=30).text
+            except Exception:
+                initial_html = ""
+
+            rows = self._parse_store_page_enhanced(initial_html, store, target_date, url)
+
+            if rows:
+                for slot in rows:
+                    try:
+                        # attach scraping session if field exists
+                        if self._model_has_field("scraping_session"):
+                            try:
+                                setattr(slot, "scraping_session", scraping_session)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+
+                try:
+                    DailySlotData.objects.bulk_create(rows, ignore_conflicts=True, batch_size=1000)
+                    result["records_created"] = len(rows)
+                    result["success"] = True
+                    logger.info(f"Successfully scraped {len(rows)} records for store {store_id}")
+                except Exception as db_err:
+                    error_msg = str(db_err)
+                    result["errors"].append(error_msg)
+                    logger.error(f"DB error: {error_msg}")
+            else:
+                result["errors"].append("No valid data found on page")
+                logger.warning(f"No valid data found for store {store_id}")
+        except Exception as e:
+            result["errors"].append(str(e))
+            logger.error(f"Scraping failed: {e}")
+            try:
+                self._log_error(scraping_session, store_id, "ScrapingException", str(e), f"{self.base_url}/{store_id}/")
+            except Exception:
+                pass
+        return result
