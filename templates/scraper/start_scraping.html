@@ -1,0 +1,175 @@
+{% extends 'scraper/base.html' %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-8 mx-auto">
+        <div class="card">
+            <div class="card-header">
+                <h3 class="mb-0">
+                    <i class="fas fa-play-circle"></i> Start Scraping Session
+                </h3>
+            </div>
+            <div class="card-body">
+                <form method="post">
+                    {% csrf_token %}
+
+                    <!-- Date Selection -->
+                    <div class="mb-4">
+                        <label for="date" class="form-label">
+                            <i class="fas fa-calendar"></i> Target Date
+                        </label>
+                        <input type="date" class="form-control" id="date" name="date" value="{{ default_date }}"
+                            required>
+                        <small class="form-text text-muted">
+                            Select the date for which you want to scrape data.
+                        </small>
+                    </div>
+
+                    <!-- Store Selection -->
+                    <div class="mb-4">
+                        <label class="form-label">
+                            <i class="fas fa-store"></i> Select Stores
+                        </label>
+                        <small class="form-text text-muted mb-3">
+                            Leave all unchecked to scrape all stores, or select specific stores to scrape.
+                        </small>
+
+                        <div class="row">
+                            {% for store in stores %}
+                            <div class="col-md-6 col-lg-4 mb-2">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" name="stores"
+                                        value="{{ store.store_id }}" id="store{{ store.store_id }}">
+                                    <label class="form-check-label" for="store{{ store.store_id }}">
+                                        <strong>{{ store.store_id }}</strong>
+                                        {% if store.name %}
+                                        <br><small class="text-muted">{{ store.name }}</small>
+                                        {% endif %}
+                                        {% if store.prefecture %}
+                                        <br><small class="badge bg-secondary">{{ store.prefecture }}</small>
+                                        {% endif %}
+                                    </label>
+                                </div>
+                            </div>
+                            {% empty %}
+                            <div class="col-12">
+                                <div class="alert alert-warning">
+                                    <i class="fas fa-exclamation-triangle"></i>
+                                    No stores available. Please add stores first.
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+
+                    <!-- Quick Select Buttons -->
+                    {% if stores %}
+                    <div class="mb-4">
+                        <label class="form-label">Quick Select:</label>
+                        <div class="btn-group" role="group">
+                            <button type="button" class="btn btn-outline-primary btn-sm" onclick="selectAll()">
+                                <i class="fas fa-check-double"></i> Select All
+                            </button>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="selectNone()">
+                                <i class="fas fa-times"></i> Select None
+                            </button>
+                        </div>
+                    </div>
+                    {% endif %}
+
+                    <!-- Submit Buttons -->
+                    <div class="d-grid gap-2 d-md-flex justify-content-md-end">
+                        <a href="{% url 'scraper:dashboard' %}" class="btn btn-secondary me-md-2">
+                            <i class="fas fa-arrow-left"></i> Cancel
+                        </a>
+                        <button type="submit" class="btn btn-primary" {% if not stores %}disabled{% endif %}>
+                            <i class="fas fa-play"></i> Start Scraping
+                        </button>
+                    </div>
+                </form>
+
+                <!-- Task Status (if task_id exists) -->
+                {% if task_id %}
+                <div class="mt-4">
+                    <div class="alert alert-success">
+                        <h5><i class="fas fa-check-circle"></i> Scraping Task Started!</h5>
+                        <p class="mb-2"><strong>Task ID:</strong> {{ task_id }}</p>
+                        <p class="mb-0">
+                            You can monitor the progress in the
+                            <a href="{% url 'scraper:scraping_sessions' %}" class="alert-link">Sessions</a> page.
+                        </p>
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Information Card -->
+        <div class="card mt-4">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <i class="fas fa-info-circle"></i> Scraping Information
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <h6>Process Overview:</h6>
+                        <ul class="list-unstyled">
+                            <li><i class="fas fa-check text-success"></i> Data collection from min-repo.com</li>
+                            <li><i class="fas fa-check text-success"></i> Parallel processing for efficiency</li>
+                            <li><i class="fas fa-check text-success"></i> Automatic error handling and retries</li>
+                            <li><i class="fas fa-check text-success"></i> Real-time progress tracking</li>
+                        </ul>
+                    </div>
+                    <div class="col-md-6">
+                        <h6>Expected Duration:</h6>
+                        <ul class="list-unstyled">
+                            <li><i class="fas fa-clock text-info"></i> Single store: 2-5 minutes</li>
+                            <li><i class="fas fa-clock text-info"></i> All stores: 30-60 minutes</li>
+                            <li><i class="fas fa-clock text-info"></i> Large datasets: 1-3 hours</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <div class="alert alert-info mt-3">
+                    <i class="fas fa-lightbulb"></i>
+                    <strong>Tip:</strong> The scraping process runs in the background.
+                    You can safely close this page and check progress later in the Sessions page.
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    function selectAll() {
+        const checkboxes = document.querySelectorAll('input[name="stores"]');
+        checkboxes.forEach(checkbox => checkbox.checked = true);
+    }
+
+    function selectNone() {
+        const checkboxes = document.querySelectorAll('input[name="stores"]');
+        checkboxes.forEach(checkbox => checkbox.checked = false);
+    }
+
+    // Auto-submit confirmation
+    document.querySelector('form').addEventListener('submit', function (e) {
+        const selectedStores = document.querySelectorAll('input[name="stores"]:checked');
+        const targetDate = document.getElementById('date').value;
+
+        if (selectedStores.length === 0) {
+            const confirmAll = confirm('No stores selected. This will scrape ALL stores. Continue?');
+            if (!confirmAll) {
+                e.preventDefault();
+                return false;
+            }
+        }
+
+        // Show loading state
+        const submitBtn = this.querySelector('button[type="submit"]');
+        submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Starting...';
+        submitBtn.disabled = true;
+    });
+</script>
+{% endblock %}

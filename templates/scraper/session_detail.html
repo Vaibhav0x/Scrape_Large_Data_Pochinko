@@ -1,0 +1,113 @@
+{% extends 'scraper/base.html' %}
+
+{% block content %}
+<h1>Session {{ session.id }} Details</h1>
+
+<div class="row mb-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5>Session Information</h5>
+            </div>
+            <div class="card-body">
+                <p><strong>Date:</strong> {{ session.date }}</p>
+                <p><strong>Status:</strong>
+                    <span
+                        class="badge bg-{% if session.status == 'completed' %}success{% elif session.status == 'failed' %}danger{% else %}warning{% endif %}">
+                        {{ session.status }}
+                    </span>
+                </p>
+                <p><strong>Start Time:</strong> {{ session.start_time }}</p>
+                <p><strong>End Time:</strong> {{ session.end_time|default:"Still running..." }}</p>
+                <p><strong>Total Stores:</strong> {{ session.total_stores }}</p>
+                <p><strong>Successful:</strong> {{ session.successful_stores }}</p>
+                <p><strong>Failed:</strong> {{ session.failed_stores }}</p>
+                <p><strong>Total Records:</strong> {{ session.total_records }}</p>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5>Statistics</h5>
+            </div>
+            <div class="card-body">
+                <p><strong>Total Records:</strong> {{ stats.total_records }}</p>
+                <p><strong>Unique Stores:</strong> {{ stats.unique_stores }}</p>
+                <p><strong>Average Payout:</strong> {{ stats.avg_payout|floatformat:2|default:"N/A" }}%</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if errors %}
+<div class="card mb-4">
+    <div class="card-header">
+        <h5>Errors</h5>
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-sm">
+                <thead>
+                    <tr>
+                        <th>Store ID</th>
+                        <th>Error Type</th>
+                        <th>Message</th>
+                        <th>Time</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for error in errors %}
+                    <tr>
+                        <td>{{ error.store_id }}</td>
+                        <td>{{ error.error_type }}</td>
+                        <td>{{ error.error_message|truncatechars:50 }}</td>
+                        <td>{{ error.timestamp }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<div class="card">
+    <div class="card-header">
+        <h5>Records ({{ page_obj.paginator.count }} total)</h5>
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-striped">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Store</th>
+                        <th>Machine</th>
+                        <th>Credits</th>
+                        <th>Games</th>
+                        <th>Payout</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for record in page_obj %}
+                    <tr>
+                        <td>{{ record.date }}</td>
+                        <td>{{ record.store.store_id }}</td>
+                        <td>{{ record.machine_number|default:"-" }}</td>
+                        <td>{{ record.credit_difference|default:"-" }}</td>
+                        <td>{{ record.game_count|default:"-" }}</td>
+                        <td>{{ record.payout_rate|floatformat:2|default:"-" }}%</td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="6">No records found</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

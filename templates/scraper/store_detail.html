@@ -1,0 +1,125 @@
+{% extends 'scraper/base.html' %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col-12">
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="{% url 'scraper:dashboard' %}">Dashboard</a></li>
+                <li class="breadcrumb-item active">Store {{ store.store_id }}</li>
+            </ol>
+        </nav>
+        <h1>Store {{ store.store_id }} Details</h1>
+    </div>
+</div>
+
+<!-- Store Information -->
+<div class="card mb-4">
+    <div class="card-header">
+        <h5 class="mb-0"><i class="fas fa-store"></i> Store Information</h5>
+    </div>
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-6">
+                <p><strong>Store ID:</strong> {{ store.store_id }}</p>
+                <p><strong>Name:</strong> {{ store.name|default:"Unknown" }}</p>
+                <p><strong>Prefecture:</strong> {{ store.prefecture|default:"Unknown" }}</p>
+            </div>
+            <div class="col-md-6">
+                <p><strong>Status:</strong>
+                    <span class="badge bg-{% if store.is_active %}success{% else %}danger{% endif %}">
+                        {% if store.is_active %}Active{% else %}Inactive{% endif %}
+                    </span>
+                </p>
+                <p><strong>Last Successful Scrape:</strong> {{ store.last_successful_scrape|default:"Never" }}</p>
+                <p><strong>Consecutive Failures:</strong> {{ store.consecutive_failures }}</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Statistics -->
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card text-center">
+            <div class="card-body">
+                <h5 class="card-title">Total Records</h5>
+                <h3 class="text-primary">{{ stats.total_records|default:"0" }}</h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-center">
+            <div class="card-body">
+                <h5 class="card-title">Avg Payout</h5>
+                <h3 class="text-success">{{ stats.avg_payout|floatformat:2|default:"N/A" }}%</h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-center">
+            <div class="card-body">
+                <h5 class="card-title">Avg Games</h5>
+                <h3 class="text-info">{{ stats.avg_games|floatformat:0|default:"N/A" }}</h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-center">
+            <div class="card-body">
+                <h5 class="card-title">Total BB+RB</h5>
+                <h3 class="text-warning">{{ stats.total_bb|add:stats.total_rb|default:"N/A" }}</h3>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Recent Data -->
+<div class="card">
+    <div class="card-header">
+        <h5 class="mb-0"><i class="fas fa-list"></i> Recent Data (Last 100 Records)</h5>
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-striped table-hover">
+                <thead class="table-dark">
+                    <tr>
+                        <th>Date</th>
+                        <th>Machine #</th>
+                        <th>Machine Name</th>
+                        <th>Credits</th>
+                        <th>Games</th>
+                        <th>Payout %</th>
+                        <th>BB</th>
+                        <th>RB</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for record in recent_data %}
+                    <tr>
+                        <td>{{ record.date }}</td>
+                        <td>{{ record.machine_number|default:"-" }}</td>
+                        <td>{{ record.machine_name|default:"-"|truncatechars:25 }}</td>
+                        <td
+                            class="{% if record.credit_difference > 0 %}text-success{% elif record.credit_difference < 0 %}text-danger{% endif %}">
+                            {{ record.credit_difference|default:"-" }}
+                        </td>
+                        <td>{{ record.game_count|default:"-" }}</td>
+                        <td
+                            class="{% if record.payout_rate > 100 %}text-success{% elif record.payout_rate < 90 %}text-danger{% endif %}">
+                            {{ record.payout_rate|floatformat:2|default:"-" }}%
+                        </td>
+                        <td>{{ record.bb|default:"-" }}</td>
+                        <td>{{ record.rb|default:"-" }}</td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="8" class="text-center text-muted">No data available for this store</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

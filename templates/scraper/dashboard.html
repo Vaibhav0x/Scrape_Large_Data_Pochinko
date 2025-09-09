@@ -1,0 +1,261 @@
+{% extends 'scraper/base.html' %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col-12">
+        <h1 class="display-4">Pachinko Scraper Dashboard</h1>
+        <p class="lead">Monitor your daily scraping operations and data collection</p>
+    </div>
+</div>
+
+<!-- Statistics Cards -->
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card bg-primary text-white">
+            <div class="card-body">
+                <div class="d-flex justify-content-between">
+                    <div>
+                        <h5 class="card-title">Total Stores</h5>
+                        <h2 class="mb-0">{{ total_stores }}</h2>
+                    </div>
+                    <div class="align-self-center">
+                        <i class="fas fa-store fa-2x"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-3">
+        <div class="card bg-success text-white">
+            <div class="card-body">
+                <div class="d-flex justify-content-between">
+                    <div>
+                        <h5 class="card-title">Total Records</h5>
+                        <h2 class="mb-0">{{ total_records|floatformat:0 }}</h2>
+                        <small>{{ recent_records }} this week</small>
+                    </div>
+                    <div class="align-self-center">
+                        <i class="fas fa-database fa-2x"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-3">
+        <div class="card bg-info text-white">
+            <div class="card-body">
+                <div class="d-flex justify-content-between">
+                    <div>
+                        <h5 class="card-title">Success Rate</h5>
+                        <h2 class="mb-0">{{ success_rate }}%</h2>
+                        <small>{{ avg_records|floatformat:0 }} avg/session</small>
+                    </div>
+                    <div class="align-self-center">
+                        <i class="fas fa-chart-line fa-2x"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-3">
+        <div class="card {% if unresolved_errors > 0 %}bg-warning{% else %}bg-secondary{% endif %} text-white">
+            <div class="card-body">
+                <div class="d-flex justify-content-between">
+                    <div>
+                        <h5 class="card-title">Errors</h5>
+                        <h2 class="mb-0">{{ unresolved_errors }}</h2>
+                        <small>Unresolved</small>
+                    </div>
+                    <div class="align-self-center">
+                        <i class="fas fa-exclamation-triangle fa-2x"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Quick Actions -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Quick Actions</h5>
+            </div>
+            <div class="card-body">
+                <div class="btn-group" role="group">
+                    <a href="{% url 'scraper:start_scraping' %}" class="btn btn-primary">
+                        <i class="fas fa-play"></i> Start Scraping
+                    </a>
+                    <a href="{% url 'scraper:data_explorer' %}" class="btn btn-outline-primary">
+                        <i class="fas fa-search"></i> Explore Data
+                    </a>
+                    <a href="{% url 'scraper:sessions' %}" class="btn btn-outline-secondary">
+                        <i class="fas fa-history"></i> View Sessions
+                    </a>
+                    <a href="/admin/" class="btn btn-outline-info">
+                        <i class="fas fa-cog"></i> Admin Panel
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Recent Sessions -->
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Recent Scraping Sessions</h5>
+                <a href="{% url 'scraper:sessions' %}" class="btn btn-sm btn-outline-primary">View All</a>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Status</th>
+                                <th>Progress</th>
+                                <th>Records</th>
+                                <th>Duration</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for session in recent_sessions %}
+                            <tr>
+                                <td>{{ session.date }}</td>
+                                <td>
+                                    <span
+                                        class="badge bg-{% if session.status == 'completed' %}success{% elif session.status == 'failed' %}danger{% elif session.status == 'running' %}warning{% else %}secondary{% endif %}">
+                                        {{ session.get_status_display }}
+                                    </span>
+                                </td>
+                                <td>
+                                    {% if session.total_stores > 0 %}
+                                    {% widthratio session.successful_stores session.total_stores 100 as percentage %}
+                                    <div class="progress" style="width: 100px;">
+                                        <div class="progress-bar {% if percentage == 100 %}bg-success{% elif percentage > 50 %}bg-warning{% else %}bg-danger{% endif %}"
+                                            style="width: {{ percentage }}%">{{ percentage }}%</div>
+                                    </div>
+                                    <small>{{ session.successful_stores }}/{{ session.total_stores }}</small>
+                                    {% else %}
+                                    N/A
+                                    {% endif %}
+                                </td>
+                                <td>{{ session.total_records|default:"0" }}</td>
+                                <td>
+                                    {% if session.end_time and session.start_time %}
+                                    {% load humanize %}
+                                    {{ session.end_time|timesince:session.start_time }}
+                                    {% else %}
+                                    {% if session.status == 'running' %}Running...{% else %}Unknown{% endif %}
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    <a href="{% url 'scraper:session_detail' session.id %}"
+                                        class="btn btn-sm btn-outline-primary">
+                                        <i class="fas fa-eye"></i> View
+                                    </a>
+                                </td>
+                            </tr>
+                            {% empty %}
+                            <tr>
+                                <td colspan="6" class="text-center text-muted">
+                                    No scraping sessions yet. <a href="{% url 'scraper:start_scraping' %}">Start your
+                                        first scraping session</a>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Charts (Optional - requires Chart.js) -->
+<div class="row mt-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Daily Records (Last 30 Days)</h5>
+            </div>
+            <div class="card-body">
+                <canvas id="dailyRecordsChart" width="400" height="200"></canvas>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Store Performance</h5>
+            </div>
+            <div class="card-body">
+                <canvas id="storePerformanceChart" width="400" height="200"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+    // Load chart data
+    fetch('{% url "scraper:api_data" %}')
+        .then(response => response.json())
+        .then(data => {
+            // Daily Records Chart
+            const dailyCtx = document.getElementById('dailyRecordsChart').getContext('2d');
+            new Chart(dailyCtx, {
+                type: 'line',
+                data: {
+                    labels: data.daily_counts.map(item => item.day),
+                    datasets: [{
+                        label: 'Records',
+                        data: data.daily_counts.map(item => item.count),
+                        borderColor: 'rgb(75, 192, 192)',
+                        tension: 0.1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        y: {
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+
+            // Store Performance Chart
+            const storeCtx = document.getElementById('storePerformanceChart').getContext('2d');
+            new Chart(storeCtx, {
+                type: 'bar',
+                data: {
+                    labels: data.store_performance.map(item => item.name),
+                    datasets: [{
+                        label: 'Records',
+                        data: data.store_performance.map(item => item.record_count),
+                        backgroundColor: 'rgba(54, 162, 235, 0.2)',
+                        borderColor: 'rgba(54, 162, 235, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        y: {
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+        });
+</script>
+{% endblock %}
