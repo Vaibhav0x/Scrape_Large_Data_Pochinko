@@ -1,5 +1,3 @@
-<img src="https://r2cdn.perplexity.ai/pplx-full-logo-primary-dark%402x.png" style="height:64px;margin-right:32px"/>
-
 # Pachinko Scraper - Complete Documentation
 
 A comprehensive Django-based web scraping system for collecting daily pachinko/slot machine data from min-repo.com. This system provides distributed scraping, data management, and a user-friendly interface for analyzing scraped data.
