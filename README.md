@@ -41,31 +41,48 @@ A comprehensive Django-based web scraping system for collecting daily pachinko/s
 
 ### Quick Setup
 
-1. **Clone and setup project:**
+1. **Venv and directory setup**
 ```bash
 mkdir pachinko_scraper
 cd pachinko_scraper
-python -m venv venv
+python -m venv venv  #on windows
 source venv/bin/activate  # Windows: venv\Scripts\activate
 
+```
+2. **Clone and setup project:**
+```bash
+## Clone the project::
+https://github.com/Vaibhav0x/Scrape_Large_Data_Pochinko.git
+
+
 # Install dependencies
-pip install django celery redis requests beautifulsoup4 lxml python-decouple django-extensions
+pip install -r requirements.txt
 ```
 
-2. **Create Django project:**
-```bash
-django-admin startproject pachinko_project .
-cd pachinko_project
-python manage.py startapp scraper
+2. **Create Database**
+
+```sql
+CREATE DATABASE YOUR_DB_NAME;
 ```
 
 3. **Apply database migrations:**
 ```bash
-python manage.py makemigrations scraper
+python manage.py makemigrations
 python manage.py migrate
-python manage.py setup_stores  # Initialize store data
 python manage.py createsuperuser  # Create admin user
 ```
+
+4. **Start the APP**
+```bash
+#run the scrapper app
+python manage.py runserver
+
+```
+Visit `http://127.0.0.1:8000/scraper/home/`
+
+Now all things are ready.
+
+Ignore below README.
 
 4. **Start services (for full functionality):**
 ```bash
