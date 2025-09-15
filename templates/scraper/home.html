@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Pachinko Scraper Dashboard</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+
+        button {
+            background: #2563eb;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            margin-right: 10px;
+            cursor: pointer;
+            border-radius: 5px;
+        }
+
+        button.retry {
+            background: #dc2626;
+        }
+
+        #logs {
+            margin-top: 20px;
+            background: black;
+            color: #00ff00;
+            padding: 15px;
+            height: 400px;
+            overflow-y: scroll;
+            font-family: monospace;
+            white-space: pre-wrap;
+        }
+
+        .controls {
+            margin-bottom: 15px;
+        }
+
+        label {
+            font-weight: bold;
+            margin-right: 10px;
+        }
+
+        input[type="date"] {
+            padding: 5px;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Pachinko Scraper Dashboard</h1>
+
+    <div class="controls">
+        <label for="scrapeDate">Select Date:</label>
+        <input type="date" id="scrapeDate" value="{{ today|default:'' }}">
+    </div>
+
+    <button onclick="runCommand('/scraper/scrape-daily/')">Scrape Data</button>
+    <button class="retry" onclick="runCommand('/scraper/retry-failed/')">Retry Failed Stores</button>
+
+    <div id="logs"></div>
+
+    <script>
+        async function runCommand(baseUrl) {
+            const date = document.getElementById("scrapeDate").value;
+            if (!date) {
+                alert("Please select a date first.");
+                return;
+            }
+            const url = `${baseUrl}?date=${date}`;
+
+            document.getElementById("logs").innerHTML = ""; // clear logs
+
+            const response = await fetch(url);
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                document.getElementById("logs").innerHTML += decoder.decode(value);
+                document.getElementById("logs").scrollTop = document.getElementById("logs").scrollHeight;
+            }
+        }
+    </script>
+</body>
+
+</html>

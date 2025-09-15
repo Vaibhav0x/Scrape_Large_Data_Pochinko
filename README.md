@@ -265,13 +265,32 @@ python manage.py scrape_daily
 
 # Scrape specific stores
 python manage.py scrape_daily --stores 2564229 2583253
-
+# failed stores runs automatically using cron job.
 # Scrape for specific date
 python manage.py scrape_daily --date 2025-09-01
 
+
 # Run synchronously (without Celery) for testing
 python manage.py scrape_daily --sync
+
+python manage.py scrape_daily --sync --date 2025-09-10
 ```
+
+Retry onto the Failed command if any store failed.
+```bash
+
+python manage.py retry_failed_scrapes --sync 
+
+#on specific store Id's
+
+#Retry for specific store
+python manage.py retry_failed_scrapes --date 2025-09-10 --sync
+
+# Retry for the specific session
+python manage.py retry_failed_scrapes --session 12 --sync
+
+```
+DELETE FROM table_name
 
 
 #### 2. Setup Initial Data

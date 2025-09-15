@@ -1,12 +1,54 @@
 from django.shortcuts import render, get_object_or_404
-from django.http import JsonResponse
+from django.http import JsonResponse,StreamingHttpResponse
 from django.contrib import messages
 from django.utils import timezone
 from django.db.models import Count, Avg, Max, Min, Q
 from django.core.paginator import Paginator
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta,date
 from .models import ScrapingSession, Store, DailySlotData, ScrapingError
 from .tasks import orchestrate_daily_scraping
+import subprocess
+
+
+def home(request):
+    """Render dashboard with today's date pre-filled"""
+    return render(request, "scraper/home.html", {"today": date.today().isoformat()})
+
+
+import sys
+import subprocess
+from datetime import date
+from django.http import StreamingHttpResponse
+
+def run_command(request, command_name):
+    """
+    Run management command and stream logs to browser
+    Example: /scraper/scrape-daily/?date=2025-09-10
+    """
+    target_date = request.GET.get("date", date.today().isoformat())
+    python_exe = sys.executable  # this points to your venv's Python
+
+    # Choose command
+    if command_name == "scrape-daily":
+        cmd = [python_exe, "manage.py", "scrape_daily", "--sync", "--date", target_date]
+    elif command_name == "retry-failed":
+        cmd = [python_exe, "manage.py", "retry_failed", "--sync", "--date", target_date]
+    else:
+        return StreamingHttpResponse(f"Unknown command: {command_name}")
+
+    # Generator for streaming output
+    def stream():
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+        )
+        for line in process.stdout:
+            yield line
+        process.wait()
+
+    return StreamingHttpResponse(stream(), content_type="text/plain")
 
 def dashboard(request):
     """Enhanced dashboard with statistics"""
